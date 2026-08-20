@@ -8,7 +8,10 @@ description: Search Google Maps for a keyword (e.g. "Hotels", "coffee in Berlin"
 Drive the internal Claude browser (`mcp__Claude_Browser__*`) through a Google Maps
 search and save every result row into a CSV.
 
-Selectors below were verified live against Google Maps (Aug 2026, `hl=en`).
+**Verified live** twice (Aug 2026, `hl=en`): `Hotels in Kyiv` → 19 rows via the
+hotel/travel UI with "Next page" pagination; `University in Kyiv` → 6 rows via the
+generic places feed, which carries phone and website but caps at ~18 per viewport.
+Which UI a keyword triggers changes both the pagination and the columns you get.
 
 ## Inputs
 
@@ -31,6 +34,12 @@ Two things dominate how many results you get. Both are easy to miss:
    hotel/travel UI *and* often a "You're seeing a limited view of Google Maps"
    notice that caps the feed at one card. `Hotels in Kyiv` does not. If the user
    gives a bare keyword, ask for a city or infer it from context and say what you used.
+
+3. **Prefer the plural for category searches.** Verified: `University in Kyiv`
+   returns **6** rows and an explicit "You've reached the end of the list";
+   `Universities in Kyiv` returns **18**. The singular reads as a name lookup, the
+   plural as a category. When a singular keyword returns a suspiciously small set,
+   retry with the plural and tell the user which phrasing produced the numbers.
 
 ## Workflow
 
@@ -65,8 +74,16 @@ Two things dominate how many results you get. Both are easy to miss:
      return JSON.stringify(log); })()
    ```
 
-   Stop when the count stops growing — it plateaus at ~19–20, which is one full page,
-   **not** the end of the results.
+   Stop when the count stops growing, then decide **which kind of plateau** it is:
+
+   - Feed text contains "You've reached the end of the list" → genuinely complete.
+   - A `button[aria-label="Next page"]` exists → one full page; go to step 6.
+   - Neither → you have hit Google's per-viewport ceiling (~18–20). More scrolling
+     will not help: verified on `Universities in Kyiv`, which held at 18 across a
+     900px and a 2400px viewport, `scrollTop` assignment, and real wheel events.
+     To go beyond it you must re-search over a smaller map area (zoom in and pan,
+     or issue per-district keywords) and merge with `--append`. Say so rather than
+     presenting the capped count as the full result.
 
 5. **Extract** (verified: 19/19 rows, names, ratings, review counts, coordinates):
 
@@ -74,9 +91,11 @@ Two things dominate how many results you get. Both are easy to miss:
    (() => {
      const phoneOf = (card) => {
        for (const line of card.innerText.split('\n').map(s => s.trim())) {
-         if (!/^\+?[\d][\d\s\-()]{7,}$/.test(line)) continue;
-         if ((line.match(/\d/g) || []).length < 9) continue;
-         return line;
+         for (const part of line.split('·').map(s => s.trim())) {   // "Open · Closes 6 pm · 044 239 3333"
+           if (!/^\+?[\d][\d\s\-()]{7,}$/.test(part)) continue;
+           if ((part.match(/\d/g) || []).length < 9) continue;
+           return part;
+         }
        }
        return '';
      };
@@ -111,7 +130,9 @@ Two things dominate how many results you get. Both are easy to miss:
 
    Two traps this snippet already avoids — do not "simplify" them back:
    - A naive `innerText.match(/\+?[\d][\d\s\-().]{7,}\d/)` phone regex matches the
-     **rating line**, producing garbage like `4.4(137)`. Hence `phoneOf`.
+     **rating line**, producing garbage like `4.4(137)`. Hence `phoneOf`. In the
+     generic feed the phone is embedded in `Open · Closes 6 pm · 044 239 3333`, so
+     `phoneOf` must also split each line on `·` before testing the parts.
    - The second `.W4Efsd` span is often a *description* ("Upmarket hotel with dining
      & a bar"), not an address. Hence `looksAddress`; leaving `address` blank is
      correct and better than storing a description there.
@@ -176,9 +197,11 @@ hand.
 
 ## What this actually returns
 
-Measured on `Hotels in Kyiv`: name, category, rating, reviews, latitude, longitude
-populated on **every** row. `address` on a minority. `phone` and `website` on
-essentially none — Google's hotel cards do not carry them. Filling those means
+Measured on `Hotels in Kyiv` (19 rows): name, category, rating, reviews, latitude,
+longitude on **every** row; `address` on a minority; `phone`/`website` on none.
+Measured on `University in Kyiv` (6 rows): all of the above **plus phone on 5 and
+website on 4** — the generic places feed carries contact details that the
+hotel/travel UI omits. Which columns fill depends on which UI the keyword triggers. Filling those means
 opening each place page (one navigation per row); offer it, but only do it on request.
 
 ## Notes

@@ -5,8 +5,9 @@ description: Search Bing Maps for a keyword (e.g. "Hotels", "pharmacies in Vienn
 
 # Bing Maps → CSV
 
-**Verified live** (Aug 2026, `Hotels in Kyiv`): 17/17 rows with name, category,
-rating, review count, and street address.
+**Verified live** twice (Aug 2026): `Hotels in Kyiv` → 17/17 rows; `University in
+Kyiv` → 18/18 rows **with phone numbers on 17**. The two queries use *different card
+layouts* — the extractor below handles both; a positional one does not.
 
 Drive the internal Claude browser (`mcp__Claude_Browser__*`) through a Bing Maps
 search and save the result list into a CSV.
@@ -15,8 +16,9 @@ search and save the result list into a CSV.
 
 - **keyword** (required) — e.g. `Hotels in Vienna`.
 - **output path** — default `./bing-maps-<slug>.csv`.
-- **target count** — not adjustable. Bing returns **one fixed batch** (17 for the
-  verified query) with no pagination and no lazy loading. Take what it gives.
+- **target count** — not adjustable. Bing returns **one fixed batch** (17 and 18 on
+  the two verified runs) with no pager, no "next", and nothing added by scrolling.
+  Confirmed twice — a flat count here really is the end, unlike Mapy or OSM.
 
 ## Workflow
 
@@ -39,33 +41,52 @@ search and save the result list into a CSV.
 
    ```js
    (() => {
+     const phoneFrom = (lines) => {
+       for (const line of lines) for (const part of line.split('·').map(s => s.trim())) {
+         if (/^\+?[\d][\d\s\-()]{7,}$/.test(part) && (part.match(/\d/g) || []).length >= 9)
+           return part;
+       }
+       return '';
+     };
      const out = [];
      document.querySelectorAll('ol.b_split_cards_cont > li').forEach(card => {
        const lines = card.innerText.split('\n').map(s => s.trim()).filter(Boolean);
        if (!lines.length) return;
-       let rating = '', reviews = '', category = '';
        const rl = lines.find(l => /^\d+(\.\d+)?\/\d+/.test(l)) || '';
+       let rating = '', reviews = '', catFromRating = '';
        if (rl) {
          const m = rl.match(/^([\d.]+)\/(\d+)\s*(?:\(([^)]+)\))?\s*(?:·\s*(.*))?$/);
          if (m) {
            const val = parseFloat(m[1]), scale = parseFloat(m[2]);
            // Bing mixes sources: TripAdvisor is /5, Booking.com is /10.
-           // Normalise everything to a 5-point scale.
            rating = scale === 10 ? +(val / 2).toFixed(2) : val;
            reviews = m[3] || '';
-           category = (m[4] || '').trim();
+           catFromRating = (m[4] || '').trim();
          }
        }
-       const idx = rl ? lines.indexOf(rl) : 0;
+       // Anchor on the opening-hours line and work outwards - the number of lines
+       // before it differs between the hotel and non-hotel layouts.
+       const rest = lines.slice(1).filter(l => l !== rl);
+       const hi = rest.findIndex(l => /^(Open|Closed|Opens|Closes|Temporarily)\b/i.test(l));
+       const body = hi >= 0 ? rest.slice(0, hi) : rest;
        out.push({
-         name: lines[0], category, rating, reviews,
-         address: lines[idx + 1] || '',
+         name: lines[0],
+         category: catFromRating || body[0] || '',
+         rating, reviews,
+         address: catFromRating ? (body[0] || '') : (body[1] || ''),
+         phone: phoneFrom(lines),
          url: location.href, source: 'bing-maps', query: '<the keyword>',
        });
      });
      return JSON.stringify(out);
    })()
    ```
+
+   **Why not index by position.** Hotel cards append the category to the rating line
+   (`3.6/5 (1.3K) · 3-star hotel`), so `lines[1]` is the address. Non-hotel cards put
+   the category on its own line, so `lines[1]` is the *category*. A fixed index wrote
+   "College/university" into the `address` column for all 18 university rows. Anchor
+   on the hours line instead, as above.
 
    If it returns `[]`, Bing restructured. Fall back to `get_page_text` and parse the
    plain-text list rather than guessing selectors.
@@ -78,17 +99,21 @@ search and save the result list into a CSV.
      the validator expands K/M suffixes. Do not strip the letter yourself; digits
      only would read it as 13.
 
-6. **Coordinates.** Not present in the card markup. Read them from the map URL
+6. **Phone numbers.** Non-hotel cards carry one in the hours line
+   (`Open · Closes 17:00 · +380 44 239 3333`), which is why `phoneFrom` splits on
+   `·`. Hotel cards carry none — that is a layout difference, not a scrape failure.
+
+7. **Coordinates.** Not present in the card markup. Read them from the map URL
    (`?cp=<lat>~<lon>`) after clicking a result, or leave blank — blank is cheaper
    and fine. Only click through if the user asked for coordinates.
 
-7. **Save.**
+8. **Save.**
 
    ```bash
    uv run scripts/write_csv.py ./bing-maps-hotels.csv places.json
    ```
 
-8. **Report** row count, output path, and that coordinates are absent by default.
+9. **Report** row count, output path, and that coordinates are absent by default.
 
 ## Validation
 
@@ -118,9 +143,10 @@ Set `source: "bing-maps"` and `query` to the keyword on every object.
 
 ## What this actually returns
 
-Measured on `Hotels in Kyiv`: name, rating, reviews, and a street address on every
-row; category on roughly half (Booking.com-sourced rows omit it). No coordinates,
-no phone, no website.
+Measured on `Hotels in Kyiv` (17 rows): name, rating, reviews, street address on
+every row; category on roughly half. No phone.
+Measured on `University in Kyiv` (18 rows): name, category, address on every row and
+**phone on 17**, but a rating on only one. Either way: no coordinates, no website.
 
 ## Notes
 

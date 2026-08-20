@@ -5,16 +5,18 @@ description: Search Mapy.com (formerly Mapy.cz) for a keyword such as "Hotels" i
 
 # Mapy.com → CSV
 
-**Verified live** (Aug 2026, `Hotels in Prague`): 15/15 rows with name, category,
-full address, **phone, and website** — the richest contact data of the five
-providers.
+**Verified live** twice (Aug 2026): `Hotels in Prague` → 15/15 rows with name,
+category, full address, **phone, and website**; `University in Kyiv` → **75 rows
+across 5 pages**. Mapy paginates — see step 5, which is the single easiest thing
+to get wrong here.
 
 ## Inputs
 
 - **keyword** (required) — e.g. `Hotels in Prague`. Coverage is richest in Czechia
   and Slovakia.
 - **output path** — default `./mapy-<slug>.csv`.
-- **target count** — 15 per page; scroll the panel for more.
+- **target count** — 15 per page, **paginated**. Page until the list comes back
+  empty. Scrolling the panel loads nothing; only the pager advances.
 
 ## Workflow
 
@@ -40,12 +42,16 @@ providers.
    Note the map renders *behind* the dialog either way, so a visible map is not
    evidence the dialog was dismissed.
 
-4. **Extract.** Rows are `ul > li > a.li-inner[href*="source=firm"]`:
+4. **Extract.** Rows are `a.li-inner`. Do **not** filter on `source=firm`: business
+   records from Firmy.cz use `?source=firm&id=…`, but OSM-derived POIs (most
+   non-commercial results — universities, schools, institutes) use `?source=osm&id=…`.
+   An earlier version of this skill filtered on `firm` and returned **zero rows** for
+   a university search. Key the accumulator on `a.href`, which is unique either way:
 
    ```js
    (() => {
      const out = [];
-     document.querySelectorAll('ul > li > a.li-inner[href*="source=firm"]').forEach(a => {
+     document.querySelectorAll('a.li-inner').forEach(a => {
        const t = (s) => a.querySelector(s)?.textContent.trim() || '';
        const name = t('h3'); if (!name) return;
        const cat = t('.type-name');
@@ -71,11 +77,62 @@ providers.
    ```
 
    `.li-inner`, `.type-name`, `.phone`, and `a.www` are all confirmed stable and
-   semantic. If the snippet returns `[]`, check step 2 first — a collapsed panel is
-   the likeliest cause, not a selector change.
+   semantic across both verified runs. If the snippet returns `[]`, the cause is
+   almost never a selector change — check, in order: (a) you read once and got a
+   throttled stale result (step 5), (b) the panel is collapsed (step 2), (c) the
+   cookie dialog is still up (step 3).
 
-5. **More results.** Scroll the results panel (`computer { action: "scroll" }` with
-   the pointer over the list), re-extract, and repeat until the count stops growing.
+5. **Page through the results — this is where rows go missing.**
+
+   Mapy shows 15 per page and has a `<button>` whose text is `next` at the bottom of
+   the panel. Clicking it also updates the URL to `…&pg=N`, so the current page is
+   readable from `new URL(location.href).searchParams.get('pg')`.
+
+   **The trap:** the Browser pane runs the tab with `document.visibilityState ===
+   "hidden"`, so Mapy's rendering is throttled. After each page change the *first*
+   `javascript_tool` read routinely returns **0 rows while a screenshot clearly shows
+   15**. That is not a selector change and not the end of the results — it is a
+   stale read. Re-read before drawing any conclusion.
+
+   Loop, accumulating in `sessionStorage` (it survives the SPA's URL updates), and
+   read twice per page:
+
+   ```js
+   (() => {
+     const KEY = '__mapyAcc';
+     const acc = JSON.parse(sessionStorage.getItem(KEY) || '{}');
+     document.querySelectorAll('a.li-inner').forEach(a => {
+       const t = s => a.querySelector(s)?.textContent.trim() || '';
+       const name = t('h3'); if (!name) return;
+       const cat = t('.type-name');
+       const ps = [...a.querySelectorAll('p')].map(p => p.textContent.trim()).filter(Boolean);
+       acc[a.href] = { name, category: cat,
+         address: ps.find(p => p !== cat && !/review|hodnocen/i.test(p)) || '',
+         phone: t('.phone'), website: a.querySelector('a.www')?.href || '', url: a.href };
+     });
+     sessionStorage.setItem(KEY, JSON.stringify(acc));
+     const b = [...document.querySelectorAll('button')]
+       .find(x => x.innerText.trim().toLowerCase() === 'next' && !x.disabled);
+     if (b) b.click();                       // advance only after harvesting
+     return JSON.stringify({ pg: new URL(location.href).searchParams.get('pg'),
+       onPage: document.querySelectorAll('a.li-inner').length,
+       total: Object.keys(acc).length, clickedNext: !!b });
+   })()
+   ```
+
+   Between pages: `computer { action: "wait", duration: 10 }` (max allowed is 10),
+   then run the snippet. **If `onPage` is 0, run it again before deciding anything** —
+   it usually returns 15 on the second call.
+
+   Stop only when a re-read still shows `onPage: 0` **and** `h3` count is 0 **and**
+   there is no enabled `next` button. All three together mean the last page is past
+   the end. Verified: `University in Kyiv` ran pages 1–5 (75 rows) with page 6 empty.
+
+   Finally, read the accumulator out:
+
+   ```js
+   JSON.stringify(Object.values(JSON.parse(sessionStorage.getItem('__mapyAcc')||'{}')))
+   ```
 
 6. **Coordinates.** Not in the list markup. Selecting a result puts them in the URL
    as `?x=<lon>&y=<lat>&z=<zoom>` — note **x is longitude, y is latitude**. Only
@@ -118,8 +175,10 @@ Set `source: "mapy.com"` and `query` to the keyword on every object.
 ## What this actually returns
 
 Measured on `Hotels in Prague`: name, category, and full address on every row;
-phone and website on most. No ratings or review counts in the list (Mapy shows
-ratings on the map pins only), and no coordinates.
+phone and website on most. Measured on `University in Kyiv` (75 rows): name,
+category, and address on every row, but **phone and website on none** — those come
+from Firmy.cz business records, so OSM-sourced results carry neither. No ratings,
+review counts, or coordinates in the list either way.
 
 Phone numbers come in local Czech format (`222 500 177`, 9 digits) and pass the
 validator's phone check. Do not add a country code that was not scraped.

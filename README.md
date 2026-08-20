@@ -5,11 +5,11 @@ Claude browser and export the results to a CSV file.
 
 | Skill | Provider | Strengths | Watch out for |
 |---|---|---|---|
-| `google-maps-scrape` | google.com/maps | Most results, ratings + reviews, coords | Needs a location in the keyword; paginates at ~20 |
-| `bing-maps-scrape` | bing.com/maps | Clean pagination | Thin data, patchy by region |
-| `apple-maps-scrape` | maps.apple.com | — | Canvas UI, few results, hardest to scrape |
-| `openstreetmap-scrape` | openstreetmap.org | Lat/lon on every row, no blockers | No ratings; ~50 results per search |
-| `mapy-scrape` | mapy.com | Best CZ/SK coverage | Cookie wall; sparse outside CZ/SK |
+| `openstreetmap-scrape` | openstreetmap.org | **Most rows** (149 verified), lat/lon on every row, no blockers | No ratings; must loop "More results" |
+| `mapy-scrape` | mapy.com | 75 rows verified, full addresses, best CZ/SK coverage | Cookie wall; paginated; throttled reads |
+| `bing-maps-scrape` | bing.com/maps | Addresses + phones, no blockers | Hard cap ~18, no pagination at all |
+| `google-maps-scrape` | google.com/maps | Ratings, reviews, coords, phones | Viewport-capped ~18; phrasing-sensitive |
+| `apple-maps-scrape` | maps.apple.com | Full addresses + coords in the href | Category-limited — returns 0 for most keywords |
 
 ## Develop
 
@@ -36,9 +36,10 @@ cp -r google-maps-scrape bing-maps-scrape apple-maps-scrape openstreetmap-scrape
 
 Per-project instead: copy them into `.claude/skills/` in the repo.
 
-Only `google-maps-scrape` has been verified against the live site (Aug 2026); its
-selectors and quirks are confirmed. The other four are written from the same
-pattern but their selectors are unverified — expect to fall back to page text.
+All five are verified against the live sites (Aug 2026), each on two different
+queries — `Hotels in Kyiv` / `Hotels in Prague` and `University in Kyiv`. Running a
+second query per provider is what caught most of the bugs: three of the five behaved
+differently on the second one.
 
 ## Use
 
@@ -89,16 +90,24 @@ non-zero if anything was blanked or skipped.
 it also de-dupes against rows already in the file, so several searches or several
 providers can accumulate into one CSV.
 
-## Two things that decide whether this works
+## Four things that decide whether this works
 
-Learned from the live Google run, and they generalize to every provider:
+Learned the hard way from live runs. The first two cost the most rows:
 
-1. **Resize the browser to desktop before extracting.** These panels render only
-   what fits the viewport. The same Google query returned **1 result** in a small
-   pane and **19** at desktop width.
-2. **Put a location in the keyword.** A bare `Hotels` pushed Google into its
-   hotel/travel UI with a "limited view of Google Maps" cap of one card;
-   `Hotels in Kyiv` returned a full page.
+1. **Exhaust the pagination.** Every provider stops early in a different way, and
+   each looks like "no more results" if you take the first plateau at face value.
+   A single `University in Kyiv` run went from **59 to 224 rows** once this was
+   fixed. Per provider: OSM appends 10 per "More results" click — **loop it**
+   (20 → 149); Mapy paginates with a `next` button, 15 per page (15 → 75); Google
+   uses "Next page" only in its hotel UI; Bing genuinely has no pagination.
+2. **A flat row count is not proof you are done.** Distinguish "end of list" (Google
+   says so in the feed), "end of page" (a pager exists), "throttled stale read"
+   (Mapy — re-read), and a real ceiling.
+3. **Resize the browser to desktop before extracting.** These panels render only
+   what fits. The same Google query gave **1 result** in a small pane and **19** at
+   desktop width. Mapy collapses its panel entirely below ~800px.
+4. **Phrasing changes the result set.** `University in Kyiv` → 6 Google rows;
+   `Universities in Kyiv` → 18. Prefer the plural for category searches.
 
 ## Notes and limits
 
@@ -106,12 +115,14 @@ Learned from the live Google run, and they generalize to every provider:
   names that change without notice. The skills tell Claude to fall back to reading
   page text rather than guessing new selectors, and to report short results honestly
   instead of filling gaps.
-- **Pagination is not always scrolling.** Google's hotel feed plateaus at ~20 and
-  needs its "Next page" button; Bing pages explicitly; OSM has "More results".
-  A flat result count usually means "end of page", not "end of results".
-- **Volume.** Google gives the most rows; Apple the fewest. For bulk OSM data the
-  OpenStreetMap skill points at the Overpass API, which is a public API and the
-  right tool at that scale.
+- **Cross-provider coverage differs enormously.** For `University in Kyiv`:
+  OSM 125, Mapy 75, Bing 18, Google 6, Apple 0 — 224 rows, 184 distinct names.
+  Run several providers and merge with `--append` when completeness matters.
+- **Volume.** OpenStreetMap gives the most rows; Apple the fewest. For bulk OSM data
+  the OpenStreetMap skill points at the Overpass API — a public documented API, the
+  right tool at that scale, and a useful cross-check (149 browser rows vs 148
+  Overpass elements for the same city). It also returns phone/website tags the
+  sidebar never shows.
 - **CAPTCHAs are a stop condition.** No skill attempts to solve one — it saves what
   was collected and says so.
 - **Phone and website** are usually absent from list cards on every provider.

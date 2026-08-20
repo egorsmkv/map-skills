@@ -5,8 +5,10 @@ description: Search Apple Maps on the web (maps.apple.com) for a keyword such as
 
 # Apple Maps → CSV
 
-**Verified live** (Aug 2026, `Hotels in Kyiv`): 8/8 rows with name, category, full
-street address, and coordinates.
+**Verified live** twice (Aug 2026): `Hotels in Kyiv` → 8/8 rows with name, category,
+full street address, and coordinates. `University in Kyiv` → **0 rows**: Apple has no
+university category and geocoded the query to a district instead. Read "Category
+coverage" below before running a non-obvious keyword.
 
 Drive the internal Claude browser (`mcp__Claude_Browser__*`) through an Apple Maps
 web search and save the results into a CSV.
@@ -107,6 +109,26 @@ Measured on `Hotels in Kyiv`: name, category, full address, and coordinates on
 every row; rating on a minority; never reviews, phone, or website. Addresses come
 back in the local script (`Тараса Шевченка бульвар, 30, Київ`) — keep them as-is,
 the CSV is UTF-8.
+
+## Category coverage — check this first
+
+Apple's web search is **category-limited**, unlike the other four providers. Typing
+into the search field surfaces its supported set; on the verified run that was
+**Fast Food, Coffee, Hotels, Centres, Airports, Cinemas**. A keyword outside that set
+is treated as a *place name* and geocoded, not searched:
+
+| Query tried | Result |
+|---|---|
+| `Hotels in Kyiv` | 8 place rows ✅ |
+| `University in Kyiv` | jumped to the Kyiv-Sviatoshyn **district** card |
+| `Universities Kyiv` | stuck on "Searching…" past 14s, then nothing |
+| typed `university` / `Kyiv university` | resolved to the **city** card |
+
+So: if the results list is empty and the panel shows a single place card with
+Population/Elevation/Area or an About section, **that is Apple declining the category,
+not a broken selector**. Do not keep re-phrasing — after one retry, record 0 rows,
+say Apple does not cover this category, and point the user at
+`openstreetmap-scrape` (149 rows for the same query) or `bing-maps-scrape`.
 
 ## Notes
 

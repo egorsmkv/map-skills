@@ -5,7 +5,9 @@ description: Search OpenStreetMap (openstreetmap.org / Nominatim) for a keyword 
 
 # OpenStreetMap → CSV
 
-**Verified live** (Aug 2026, `Hotels in Kyiv`): 10/10 rows, every field populated.
+**Verified live** twice (Aug 2026): `Hotels in Kyiv` → 10/10 rows, every field
+populated; `University in Kyiv` → **149 rows** after looping "More results" to
+exhaustion. Clicking it once and stopping yields 20 and looks complete — it isn't.
 
 Drive the internal Claude browser (`mcp__Claude_Browser__*`) through an
 openstreetmap.org search and save the results into a CSV. This is the one provider
@@ -16,8 +18,8 @@ that reliably gives you latitude and longitude for every row.
 - **keyword** (required) — e.g. `Hotels in Kraków`. OSM's search is Nominatim, so it
   works best as `<thing> in <place>` or `<thing> near <place>`.
 - **output path** — default `./openstreetmap-<slug>.csv`.
-- **target count** — verified: **10 results per page**, with a "More results" link
-  to load the next batch. (Not ~50 in one shot.)
+- **target count** — **10 per click**, appended to the list. Keep clicking "More
+  results" until the link disappears. Verified ceiling for `University in Kyiv`: 149.
 
 ## Workflow
 
@@ -61,9 +63,29 @@ that reliably gives you latitude and longitude for every row.
    is `"<name>, <street>, <district>, <city>, <postcode>, <country>"`, so splitting
    on the first comma gives name and address cleanly.
 
-   A **"More results"** link sits at the bottom of the sidebar (confirmed present).
-   Click it via `ref` and re-extract; repeat until it disappears or nothing new
-   appears. Each click adds another 10.
+   A **"More results"** link sits at the bottom of the sidebar. Each click **appends**
+   another 10 to the existing list (it does not replace them), so extract once at the
+   end rather than per click.
+
+   **Loop it to exhaustion.** This is the difference between 20 rows and 149:
+
+   ```js
+   (async () => {
+     const count = () => document.querySelectorAll('.search_results_entry a.set_position').length;
+     const more  = () => [...document.querySelectorAll('#sidebar_content a')]
+                          .find(e => /More results/i.test(e.innerText));
+     const log = [count()];
+     for (let i = 0; i < 4; i++) {                 // 4 per call: ~2.2s each fits the 30s JS budget
+       const m = more(); if (!m) { log.push('END'); break; }
+       m.click(); await new Promise(r => setTimeout(r, 2200)); log.push(count());
+     }
+     return JSON.stringify({ log, hasMore: !!more() });
+   })()
+   ```
+
+   Re-run this call until it reports `hasMore: false` (or the count plateaus across
+   two consecutive calls). Do not put more than ~4 clicks in one call — the tool
+   aborts at 30s and you lose the result, though the clicks already landed.
 
 4. **Enrich (optional).** Each result links to an OSM object page
    (`/node/<id>`, `/way/<id>`) whose tag table has `phone`, `website`,
@@ -113,9 +135,9 @@ Set `source: "openstreetmap"` and `query: "<the keyword>"` on every object.
 
 ## Notes
 
-- **If the user wants many rows or a whole city**, the browser search caps out around
-  50. Say so and offer the Overpass API instead — one HTTP request returns every
-  tagged hotel in a bounding box:
+- **If the user wants a whole city**, the browser loop works (149 rows verified) but
+  costs one tool call per ~4 clicks. Offer the Overpass API instead — one HTTP
+  request returns every tagged feature in an area, with richer tags:
 
   ```bash
   curl -s -G https://overpass-api.de/api/interpreter --data-urlencode \
@@ -123,6 +145,13 @@ Set `source: "openstreetmap"` and `query: "<the keyword>"` on every object.
   ```
 
   That is a documented public API, not a scrape, and it is the right tool at volume.
-  Still pipe the result through `scripts/write_csv.py` after mapping the fields.
+  It also returns tags the sidebar never shows — on the verified Kyiv run it gave
+  **73 websites and 24 phone numbers** across 125 named rows, where the browser
+  sidebar gives neither. Map `tags.name:en || tags.name`, `tags.phone`,
+  `tags.website`, `addr:*`, and `lat/lon` (or `center`) into the schema, then pipe
+  through `scripts/write_csv.py`.
+- **Cross-check at volume.** The browser loop and Overpass agree closely: 149 rows
+  from the sidebar vs 148 elements (124 named) from Overpass for the same city. If
+  the two disagree by a lot, you stopped clicking too early.
 - Respect Nominatim's usage policy: no rapid-fire automated searches. One query per
   user request is fine; a loop over hundreds of keywords is not.
